@@ -1,7 +1,5 @@
 version: 0.2
 
-# Adicionada a variável TF_COMMAND para controlar a ação do Terraform.
-# Pode ser sobrescrita na configuração do CodeBuild.
 env:
   variables:
     TERRAFORM_VERSION: "1.5.5"
@@ -11,22 +9,18 @@ env:
 phases:
   install:
     commands:
-      # Lógica para detectar a arquitetura e instalar a versão correta do Terraform
+      # Bloco para detectar arquitetura e instalar o Terraform
       - |
         echo "Detectando a arquitetura do sistema..."
         ARCH=$(uname -m)
-        echo "Arquitetura detectada: $ARCH"
-
         case $ARCH in
           x86_64) TF_ARCH="amd64" ;;
           aarch64) TF_ARCH="arm64" ;;
           *) echo "Arquitetura não suportada: $ARCH"; exit 1 ;;
         esac
         echo "Arquitetura do Terraform a ser usada: $TF_ARCH"
-
         TF_FILENAME="terraform_${TERRAFORM_VERSION}_linux_${TF_ARCH}.zip"
         TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${TF_FILENAME}"
-
         echo "Fazendo download de: $TF_URL"
         yum install -y unzip -q
         wget -q $TF_URL
@@ -37,19 +31,17 @@ phases:
 
   pre_build:
     commands:
-      # Navega para o diretório com o código Terraform
       - echo "Navegando para o diretório do Terraform: $TF_DIRECTORY"
       - cd "$TF_DIRECTORY"
 
   build:
     commands:
-      # 1. Inicializa o Terraform em todas as execuções
       - echo "Inicializando o Terraform (terraform init -reconfigure)..."
       - terraform init -reconfigure
 
-      # 2. Executa a ação baseada na variável TF_COMMAND
-      - echo "Executando o comando Terraform: $TF_COMMAND"
+      # CORREÇÃO AQUI: O bloco 'case' está dentro de um bloco de string de múltiplas linhas
       - |
+        echo "Executando o comando Terraform: $TF_COMMAND"
         case $TF_COMMAND in
           plan)
             echo "Gerando o plano do Terraform (terraform plan)..."
