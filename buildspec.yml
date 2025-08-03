@@ -9,29 +9,29 @@ env:
 phases:
   install:
     commands:
-      # Usando a sintaxe ${VARIAVEL} para robustez
+      # Um único bloco de comandos para toda a instalação.
       - |
         echo "Detectando a arquitetura do sistema..."
         ARCH=$(uname -m)
-        echo "Arquitetura detectada: ${ARCH}"
-
         case ${ARCH} in
           x86_64) TF_ARCH="amd64" ;;
           aarch64) TF_ARCH="arm64" ;;
           *) echo "Arquitetura não suportada: ${ARCH}"; exit 1 ;;
         esac
 
-        echo "Arquitetura do Terraform a ser usada: ${TF_ARCH}"
+        echo "Instalando o Terraform..."
         TF_FILENAME="terraform_${TERRAFORM_VERSION}_linux_${TF_ARCH}.zip"
-        TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${TF_FILENAME}"
-        
-        echo "Instalando dependências e o Terraform..."
-        yum install -y unzip -q
-        wget -q "${TF_URL}"
+        wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${TF_FILENAME}"
         unzip "${TF_FILENAME}"
-        mv terraform /usr/local/bin/
-        rm "${TF_FILENAME}"
         
+        # --- CORREÇÃO PRINCIPAL AQUI ---
+        # 1. Mover o Terraform para um diretório local, não um diretório de sistema.
+        # 2. Adicionar esse diretório local ao PATH do ambiente.
+        mkdir -p $HOME/bin
+        mv terraform $HOME/bin/terraform
+        export PATH="$HOME/bin:$PATH"
+        # -----------------------------
+
         echo "Verificando a versão do Terraform..."
         terraform --version
 
