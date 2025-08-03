@@ -31,7 +31,7 @@ phases:
 
   pre_build:
     commands:
-      - echo "Navegando para o diretório do Terraform: $TF_DIRECTORY"
+      - echo "Navegando para o diretório do Terraform"
       - cd "$TF_DIRECTORY"
 
   build:
