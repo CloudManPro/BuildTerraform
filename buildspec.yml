@@ -1,0 +1,76 @@
+version: 0.2
+
+# Adicionada a variável TF_COMMAND para controlar a ação do Terraform.
+# Pode ser sobrescrita na configuração do CodeBuild.
+env:
+  variables:
+    TERRAFORM_VERSION: "1.5.5"
+    TF_DIRECTORY: "terraform_code"
+    TF_COMMAND: "plan"  # Comando padrão. Pode ser 'plan', 'apply' ou 'destroy'.
+
+phases:
+  install:
+    commands:
+      # Lógica para detectar a arquitetura e instalar a versão correta do Terraform
+      - |
+        echo "Detectando a arquitetura do sistema..."
+        ARCH=$(uname -m)
+        echo "Arquitetura detectada: $ARCH"
+
+        case $ARCH in
+          x86_64) TF_ARCH="amd64" ;;
+          aarch64) TF_ARCH="arm64" ;;
+          *) echo "Arquitetura não suportada: $ARCH"; exit 1 ;;
+        esac
+        echo "Arquitetura do Terraform a ser usada: $TF_ARCH"
+
+        TF_FILENAME="terraform_${TERRAFORM_VERSION}_linux_${TF_ARCH}.zip"
+        TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${TF_FILENAME}"
+
+        echo "Fazendo download de: $TF_URL"
+        yum install -y unzip -q
+        wget -q $TF_URL
+        unzip $TF_FILENAME
+        mv terraform /usr/local/bin/
+        rm $TF_FILENAME
+      - terraform --version
+
+  pre_build:
+    commands:
+      # Navega para o diretório com o código Terraform
+      - echo "Navegando para o diretório do Terraform: $TF_DIRECTORY"
+      - cd "$TF_DIRECTORY"
+
+  build:
+    commands:
+      # 1. Inicializa o Terraform em todas as execuções
+      - echo "Inicializando o Terraform (terraform init -reconfigure)..."
+      - terraform init -reconfigure
+
+      # 2. Executa a ação baseada na variável TF_COMMAND
+      - echo "Executando o comando Terraform: $TF_COMMAND"
+      - |
+        case $TF_COMMAND in
+          plan)
+            echo "Gerando o plano do Terraform (terraform plan)..."
+            terraform plan
+            ;;
+          apply)
+            echo "Gerando o plano do Terraform (terraform plan -out=tfplan)..."
+            terraform plan -out=tfplan
+            echo "Aplicando as configurações do Terraform (terraform apply)..."
+            terraform apply -auto-approve tfplan
+            ;;
+          destroy)
+            echo "Destruindo a infraestrutura (terraform destroy)..."
+            terraform destroy -auto-approve
+            ;;
+          *)
+            echo "Comando '$TF_COMMAND' inválido. Use 'plan', 'apply' ou 'destroy'."
+            exit 1
+            ;;
+        esac
+
+  post_build:
+    commands:
+      - echo "Build para o comando '$TF_COMMAND' concluído."
