@@ -41,7 +41,6 @@ phases:
 
       # CORREÇÃO AQUI: O bloco 'case' está dentro de um bloco de string de múltiplas linhas
       - |
-        echo "Executando o comando Terraform: $TF_COMMAND"
         case $TF_COMMAND in
           plan)
             echo "Gerando o plano do Terraform (terraform plan)..."
