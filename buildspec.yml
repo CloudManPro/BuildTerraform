@@ -7,29 +7,21 @@ env:
 phases:
   install:
     commands:
-      # --- CORREÇÃO DE PERMISSÃO APLICADA AQUI ---
+      # A fase de instalação está correta e não precisa de mudanças.
       - |
         echo "Instalando o Terraform ${TERRAFORM_VERSION}..."
         ARCH=$(uname -m | sed -e 's/aarch64/arm64/' -e 's/x86_64/amd64/')
         wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH}.zip"
-        
-        # 1. Descompacta o arquivo no diretório atual (que é gravável)
         unzip terraform_*.zip
-        
-        # 2. Cria um diretório 'bin' no diretório home do usuário (gravável)
         mkdir -p $HOME/bin
-        
-        # 3. Move o executável do Terraform para esse diretório
         mv terraform $HOME/bin/
-        
-        # 4. Adiciona o novo diretório ao PATH para que o comando 'terraform' seja encontrado
         export PATH="$HOME/bin:$PATH"
-        
         echo "Verificando a instalação do Terraform..."
         terraform --version
 
   pre_build:
     commands:
+      # A fase de download do main.tf está correta e não precisa de mudanças.
       - |
         echo "Construindo o caminho do S3 para o arquivo main.tf..."
         TF_CODE_PATH="s3://${AWS_S3_BUCKET_TARGET_NAME_0}/states/${STATE_NAME}/main.tf"
@@ -38,12 +30,32 @@ phases:
         aws s3 cp "${TF_CODE_PATH}" .
         
         echo "Arquivo main.tf baixado com sucesso."
-        echo "Listando arquivos no diretório atual para confirmação:"
-        ls -la
+        echo "Estrutura de arquivos ANTES do ajuste:"
+        ls -laR
 
   build:
     commands:
+      # --- ESTA É A VERSÃO 100% DINÂMICA ---
       - |
+        echo "Ajustando a estrutura de diretórios para corresponder ao esperado pelo main.tf..."
+        
+        # 1. Obter o identificador da fonte secundária da variável de ambiente.
+        #    Isso torna o script independente de qual repositório é usado.
+        SOURCE_IDENTIFIER="$SECONDARY_SOURCE_IDENTIFIERS"
+        echo "Identificador da fonte secundária encontrado: ${SOURCE_IDENTIFIER}"
+
+        # 2. Construir dinamicamente o NOME da variável que armazena o caminho do diretório.
+        SOURCE_PATH_VAR_NAME="CODEBUILD_SRC_DIR_${SOURCE_IDENTIFIER}"
+        echo "Nome da variável de caminho do CodeBuild: ${SOURCE_PATH_VAR_NAME}"
+        
+        # 3. Renomeia o diretório de origem (obtido dinamicamente) para o nome de destino (que é fixo e esperado pelo main.tf).
+        #    A sintaxe '${!VAR}' é uma expansão indireta: ela obtém o valor da variável cujo nome está armazenado em VAR.
+        echo "Movendo '${!SOURCE_PATH_VAR_NAME}' para 'LambdaDeploy'..."
+        mv "${!SOURCE_PATH_VAR_NAME}" "LambdaDeploy"
+        
+        echo "Estrutura de arquivos DEPOIS do ajuste:"
+        ls -laR
+
         echo "Inicializando o Terraform..."
         terraform init -reconfigure
 
@@ -56,6 +68,7 @@ phases:
           apply)
             echo "Gerando o plano para aplicação..."
             terraform plan -out=tfplan
+            
             echo "Aplicando as configurações do Terraform..."
             terraform apply -auto-approve tfplan
             ;;
