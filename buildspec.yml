@@ -1,29 +1,35 @@
 version: 0.2
 
 env:
-  # O 'parameter-store' ou 'secrets-manager' pode ser usado para buscar segredos, 
-  # mas para variáveis de texto simples, a seção 'variables' é suficiente.
   variables:
     TERRAFORM_VERSION: "1.5.5"
-    # TF_COMMAND é injetado dinamicamente pela chamada da Lambda
-    # AWS_S3_BUCKET_TARGET_NAME_0 é injetado dinamicamente
-    # STATE_NAME é injetado dinamicamente
 
 phases:
   install:
     commands:
-      # Sua fase de instalação está ótima.
+      # --- CORREÇÃO DE PERMISSÃO APLICADA AQUI ---
       - |
         echo "Instalando o Terraform ${TERRAFORM_VERSION}..."
         ARCH=$(uname -m | sed -e 's/aarch64/arm64/' -e 's/x86_64/amd64/')
         wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH}.zip"
-        unzip -o terraform_*.zip -d /usr/local/bin/
+        
+        # 1. Descompacta o arquivo no diretório atual (que é gravável)
+        unzip terraform_*.zip
+        
+        # 2. Cria um diretório 'bin' no diretório home do usuário (gravável)
+        mkdir -p $HOME/bin
+        
+        # 3. Move o executável do Terraform para esse diretório
+        mv terraform $HOME/bin/
+        
+        # 4. Adiciona o novo diretório ao PATH para que o comando 'terraform' seja encontrado
+        export PATH="$HOME/bin:$PATH"
+        
         echo "Verificando a instalação do Terraform..."
         terraform --version
 
   pre_build:
     commands:
-      # --- ESTA É A VERSÃO DINÂMICA DA SOLUÇÃO ---
       - |
         echo "Construindo o caminho do S3 para o arquivo main.tf..."
         TF_CODE_PATH="s3://${AWS_S3_BUCKET_TARGET_NAME_0}/states/${STATE_NAME}/main.tf"
@@ -34,16 +40,13 @@ phases:
         echo "Arquivo main.tf baixado com sucesso."
         echo "Listando arquivos no diretório atual para confirmação:"
         ls -la
-        # O diretório atual agora contém o main.tf e os diretórios clonados do GitHub.
 
   build:
     commands:
       - |
         echo "Inicializando o Terraform..."
-        # O init agora vai encontrar o main.tf no diretório atual
         terraform init -reconfigure
 
-        # Usando a variável de ambiente 'COMMAND' que você definiu
         echo "Executando o comando Terraform: ${COMMAND}"
         case ${COMMAND} in
           plan)
