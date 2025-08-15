@@ -30,31 +30,72 @@ phases:
         aws s3 cp "${TF_CODE_PATH}" .
         
         echo "Arquivo main.tf baixado com sucesso."
-        echo "Estrutura de arquivos ANTES do ajuste:"
+        echo "--------------------------------------------------"
+        echo "ESTRUTURA DE ARQUIVOS ANTES DO AJUSTE (VISUALIZAÇÃO):"
         ls -laR
+        echo "--------------------------------------------------"
+
 
   build:
     commands:
-      # --- ESTA É A VERSÃO 100% DINÂMICA ---
+      # --- VERSÃO FINAL COM VERIFICAÇÕES DE DIRETÓRIO ---
       - |
-        echo "Ajustando a estrutura de diretórios para corresponder ao esperado pelo main.tf..."
+        echo "Ajustando e VERIFICANDO a estrutura de diretórios para múltiplas fontes..."
         
-        # 1. Obter o identificador da fonte secundária da variável de ambiente.
-        #    Isso torna o script independente de qual repositório é usado.
-        SOURCE_IDENTIFIER="$SECONDARY_SOURCE_IDENTIFIERS"
-        echo "Identificador da fonte secundária encontrado: ${SOURCE_IDENTIFIER}"
+        # Faz um loop por cada identificador na variável de ambiente
+        for IDENTIFIER in $SECONDARY_SOURCE_IDENTIFIERS; do
+          SOURCE_PATH_VAR_NAME="CODEBUILD_SRC_DIR_${IDENTIFIER}"
+          SOURCE_PATH="${!SOURCE_PATH_VAR_NAME}"
+          
+          echo "=================================================="
+          echo "Processando identificador: ${IDENTIFIER}"
+          echo "Caminho de origem esperado: ${SOURCE_PATH}"
+          
+          # ======================= VERIFICAÇÃO 1: O CLONE EXISTE? =======================
+          # Verifica se o CodeBuild realmente clonou o repositório no local esperado.
+          # A flag '[ ! -d "..." ]' verifica se o diretório NÃO existe.
+          if [ ! -d "${SOURCE_PATH}" ]; then
+              echo "ERRO CRÍTICO: O diretório de origem clonado '${SOURCE_PATH}' não foi encontrado!"
+              echo "Causas possíveis: O 'sourceIdentifier' (${IDENTIFIER}) está incorreto ou a fonte secundária falhou ao ser clonada."
+              exit 1 # Falha o build imediatamente
+          fi
+          echo "VERIFICAÇÃO SUCESSO: Diretório de origem '${SOURCE_PATH}' encontrado."
+          # ==============================================================================
 
-        # 2. Construir dinamicamente o NOME da variável que armazena o caminho do diretório.
-        SOURCE_PATH_VAR_NAME="CODEBUILD_SRC_DIR_${SOURCE_IDENTIFIER}"
-        echo "Nome da variável de caminho do CodeBuild: ${SOURCE_PATH_VAR_NAME}"
+          # Mapeamento de qual identificador corresponde a qual diretório esperado pelo Terraform
+          TARGET_NAME=""
+          if [ "$IDENTIFIER" == "CloudManProLambdaDeploy" ]; then
+              TARGET_NAME="LambdaDeploy"
+          elif [ "$IDENTIFIER" == "BuildPrivate" ]; then # Ajustado para o nome provável do seu identificador
+              TARGET_NAME="BuildPrivate"
+          fi
+          
+          if [ -n "$TARGET_NAME" ]; then
+              echo "Movendo '${SOURCE_PATH}' para o diretório de destino '${TARGET_NAME}'..."
+              mv "${SOURCE_PATH}" "${TARGET_NAME}"
+              
+              # =================== VERIFICAÇÃO 2: A RENOMEAÇÃO FUNCIONOU? ==================
+              # Verifica se o novo diretório de destino agora existe.
+              if [ ! -d "${TARGET_NAME}" ]; then
+                  echo "ERRO CRÍTICO: O diretório de destino '${TARGET_NAME}' não foi encontrado após a tentativa de renomeação."
+                  echo "A operação 'mv' pode ter falhado devido a um problema inesperado."
+                  exit 1 # Falha o build imediatamente
+              fi
+              echo "VERIFICAÇÃO SUCESSO: Diretório de destino '${TARGET_NAME}' criado com sucesso."
+              # ===============================================================================
+
+          else
+              echo "AVISO: Nenhum mapeamento de diretório encontrado para o identificador '${IDENTIFIER}'. Pulando renomeação."
+          fi
+          echo "=================================================="
+        done
         
-        # 3. Renomeia o diretório de origem (obtido dinamicamente) para o nome de destino (que é fixo e esperado pelo main.tf).
-        #    A sintaxe '${!VAR}' é uma expansão indireta: ela obtém o valor da variável cujo nome está armazenado em VAR.
-        echo "Movendo '${!SOURCE_PATH_VAR_NAME}' para 'LambdaDeploy'..."
-        mv "${!SOURCE_PATH_VAR_NAME}" "LambdaDeploy"
-        
-        echo "Estrutura de arquivos DEPOIS do ajuste:"
+        echo
+        echo "--------------------------------------------------"
+        echo "ESTRUTURA DE ARQUIVOS DEPOIS DO AJUSTE (VISUALIZAÇÃO):"
         ls -laR
+        echo "--------------------------------------------------"
+        echo
 
         echo "Inicializando o Terraform..."
         terraform init -reconfigure
@@ -62,18 +103,13 @@ phases:
         echo "Executando o comando Terraform: ${COMMAND}"
         case ${COMMAND} in
           plan)
-            echo "Gerando o plano do Terraform..."
             terraform plan
             ;;
           apply)
-            echo "Gerando o plano para aplicação..."
             terraform plan -out=tfplan
-            
-            echo "Aplicando as configurações do Terraform..."
             terraform apply -auto-approve tfplan
             ;;
           destroy)
-            echo "Destruindo a infraestrutura..."
             terraform destroy -auto-approve
             ;;
           *)
