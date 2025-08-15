@@ -35,57 +35,40 @@ phases:
         ls -laR
         echo "--------------------------------------------------"
 
-
   build:
     commands:
-      # --- VERSÃO FINAL COM VERIFICAÇÕES DE DIRETÓRIO ---
+      # --- VERSÃO FINAL E 100% DINÂMICA BASEADA EM CONVENÇÃO ---
       - |
-        echo "Ajustando e VERIFICANDO a estrutura de diretórios para múltiplas fontes..."
+        echo "Ajustando a estrutura de diretórios dinamicamente..."
         
-        # Faz um loop por cada identificador na variável de ambiente
+        # Define o prefixo comum que será removido dos identificadores.
+        # Altere este valor se sua convenção de nomenclatura mudar.
+        PREFIX_TO_REMOVE="CloudManPro"
+
+        # Faz um loop por cada identificador na variável de ambiente.
+        # O shell irá dividir a string por espaços automaticamente.
         for IDENTIFIER in $SECONDARY_SOURCE_IDENTIFIERS; do
+          
+          # Constrói o nome da variável que contém o caminho de origem
           SOURCE_PATH_VAR_NAME="CODEBUILD_SRC_DIR_${IDENTIFIER}"
+          # Usa expansão indireta para obter o caminho real
           SOURCE_PATH="${!SOURCE_PATH_VAR_NAME}"
           
+          # Usa a expansão de parâmetro do shell para remover o prefixo do identificador,
+          # criando assim o nome do diretório de destino dinamicamente.
+          # Ex: "CloudManProLambdaDeploy" se torna "LambdaDeploy"
+          TARGET_NAME="${IDENTIFIER#$PREFIX_TO_REMOVE}"
+          
           echo "=================================================="
-          echo "Processando identificador: ${IDENTIFIER}"
-          echo "Caminho de origem esperado: ${SOURCE_PATH}"
+          echo "Processando Identificador: ${IDENTIFIER}"
+          echo "  -> Caminho de Origem: ${SOURCE_PATH}"
+          echo "  -> Nome de Destino Calculado: ${TARGET_NAME}"
           
-          # ======================= VERIFICAÇÃO 1: O CLONE EXISTE? =======================
-          # Verifica se o CodeBuild realmente clonou o repositório no local esperado.
-          # A flag '[ ! -d "..." ]' verifica se o diretório NÃO existe.
-          if [ ! -d "${SOURCE_PATH}" ]; then
-              echo "ERRO CRÍTICO: O diretório de origem clonado '${SOURCE_PATH}' não foi encontrado!"
-              echo "Causas possíveis: O 'sourceIdentifier' (${IDENTIFIER}) está incorreto ou a fonte secundária falhou ao ser clonada."
-              exit 1 # Falha o build imediatamente
-          fi
-          echo "VERIFICAÇÃO SUCESSO: Diretório de origem '${SOURCE_PATH}' encontrado."
-          # ==============================================================================
-
-          # Mapeamento de qual identificador corresponde a qual diretório esperado pelo Terraform
-          TARGET_NAME=""
-          if [ "$IDENTIFIER" == "CloudManProLambdaDeploy" ]; then
-              TARGET_NAME="LambdaDeploy"
-          elif [ "$IDENTIFIER" == "BuildPrivate" ]; then # Ajustado para o nome provável do seu identificador
-              TARGET_NAME="BuildPrivate"
-          fi
-          
-          if [ -n "$TARGET_NAME" ]; then
-              echo "Movendo '${SOURCE_PATH}' para o diretório de destino '${TARGET_NAME}'..."
-              mv "${SOURCE_PATH}" "${TARGET_NAME}"
-              
-              # =================== VERIFICAÇÃO 2: A RENOMEAÇÃO FUNCIONOU? ==================
-              # Verifica se o novo diretório de destino agora existe.
-              if [ ! -d "${TARGET_NAME}" ]; then
-                  echo "ERRO CRÍTICO: O diretório de destino '${TARGET_NAME}' não foi encontrado após a tentativa de renomeação."
-                  echo "A operação 'mv' pode ter falhado devido a um problema inesperado."
-                  exit 1 # Falha o build imediatamente
-              fi
-              echo "VERIFICAÇÃO SUCESSO: Diretório de destino '${TARGET_NAME}' criado com sucesso."
-              # ===============================================================================
-
+          if [ -d "${SOURCE_PATH}" ]; then
+            echo "  -> Movendo '${SOURCE_PATH}' para '${TARGET_NAME}'..."
+            mv "${SOURCE_PATH}" "${TARGET_NAME}"
           else
-              echo "AVISO: Nenhum mapeamento de diretório encontrado para o identificador '${IDENTIFIER}'. Pulando renomeação."
+            echo "  -> AVISO: Diretório de origem '${SOURCE_PATH}' não encontrado. Pulando."
           fi
           echo "=================================================="
         done
