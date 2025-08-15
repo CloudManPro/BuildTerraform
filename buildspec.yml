@@ -1,55 +1,51 @@
 version: 0.2
 
 env:
+  # O 'parameter-store' ou 'secrets-manager' pode ser usado para buscar segredos, 
+  # mas para variáveis de texto simples, a seção 'variables' é suficiente.
   variables:
     TERRAFORM_VERSION: "1.5.5"
-    TF_DIRECTORY: "terraform_code"
-    TF_COMMAND: "plan"
+    # TF_COMMAND é injetado dinamicamente pela chamada da Lambda
+    # AWS_S3_BUCKET_TARGET_NAME_0 é injetado dinamicamente
+    # STATE_NAME é injetado dinamicamente
 
 phases:
   install:
     commands:
-      # Um único bloco de comandos para toda a instalação.
+      # Sua fase de instalação está ótima.
       - |
-        echo "Detectando a arquitetura do sistema..."
-        ARCH=$(uname -m)
-        case ${ARCH} in
-          x86_64) TF_ARCH="amd64" ;;
-          aarch64) TF_ARCH="arm64" ;;
-          *) echo "Arquitetura não suportada: ${ARCH}"; exit 1 ;;
-        esac
-
-        echo "Instalando o Terraform..."
-        TF_FILENAME="terraform_${TERRAFORM_VERSION}_linux_${TF_ARCH}.zip"
-        wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${TF_FILENAME}"
-        unzip "${TF_FILENAME}"
-        
-        # --- CORREÇÃO PRINCIPAL AQUI ---
-        # 1. Mover o Terraform para um diretório local, não um diretório de sistema.
-        # 2. Adicionar esse diretório local ao PATH do ambiente.
-        mkdir -p $HOME/bin
-        mv terraform $HOME/bin/terraform
-        export PATH="$HOME/bin:$PATH"
-        # -----------------------------
-
-        echo "Verificando a versão do Terraform..."
+        echo "Instalando o Terraform ${TERRAFORM_VERSION}..."
+        ARCH=$(uname -m | sed -e 's/aarch64/arm64/' -e 's/x86_64/amd64/')
+        wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH}.zip"
+        unzip -o terraform_*.zip -d /usr/local/bin/
+        echo "Verificando a instalação do Terraform..."
         terraform --version
 
   pre_build:
     commands:
+      # --- ESTA É A VERSÃO DINÂMICA DA SOLUÇÃO ---
       - |
-        echo "Navegando para o diretório do Terraform: ${TF_DIRECTORY}"
-        cd "${TF_DIRECTORY}"
-        echo "Diretório de trabalho atual: $(pwd)"
+        echo "Construindo o caminho do S3 para o arquivo main.tf..."
+        TF_CODE_PATH="s3://${AWS_S3_BUCKET_TARGET_NAME_0}/states/${STATE_NAME}/main.tf"
+        
+        echo "Baixando o arquivo main.tf de: ${TF_CODE_PATH}"
+        aws s3 cp "${TF_CODE_PATH}" .
+        
+        echo "Arquivo main.tf baixado com sucesso."
+        echo "Listando arquivos no diretório atual para confirmação:"
+        ls -la
+        # O diretório atual agora contém o main.tf e os diretórios clonados do GitHub.
 
   build:
     commands:
       - |
         echo "Inicializando o Terraform..."
+        # O init agora vai encontrar o main.tf no diretório atual
         terraform init -reconfigure
 
-        echo "Executando o comando Terraform: ${TF_COMMAND}"
-        case ${TF_COMMAND} in
+        # Usando a variável de ambiente 'COMMAND' que você definiu
+        echo "Executando o comando Terraform: ${COMMAND}"
+        case ${COMMAND} in
           plan)
             echo "Gerando o plano do Terraform..."
             terraform plan
@@ -65,11 +61,11 @@ phases:
             terraform destroy -auto-approve
             ;;
           *)
-            echo "Comando '${TF_COMMAND}' inválido. Use 'plan', 'apply' ou 'destroy'."
+            echo "Comando '${COMMAND}' inválido. Use 'plan', 'apply' ou 'destroy'."
             exit 1
             ;;
         esac
 
   post_build:
     commands:
-      - echo "Build para o comando '${TF_COMMAND}' concluído."
+      - echo "Build para o comando '${COMMAND}' concluído."
