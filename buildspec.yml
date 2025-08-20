@@ -7,7 +7,7 @@ env:
 phases:
   install:
     commands:
-      # A fase de instalação está correta e não precisa de mudanças.
+      # Nenhuma alteração necessária aqui. Sua fase de instalação está perfeita.
       - |
         echo "Instalando o Terraform ${TERRAFORM_VERSION}..."
         ARCH=$(uname -m | sed -e 's/aarch64/arm64/' -e 's/x86_64/amd64/')
@@ -21,7 +21,7 @@ phases:
 
   pre_build:
     commands:
-      # A fase de download do main.tf está correta e não precisa de mudanças.
+      # Seu bloco de download do S3 permanece como está.
       - |
         echo "Construindo o caminho do S3 para o arquivo main.tf..."
         TF_CODE_PATH="s3://${AWS_S3_BUCKET_TARGET_NAME_0}/states/${STATE_NAME}/main.tf"
@@ -35,28 +35,53 @@ phases:
         ls -laR
         echo "--------------------------------------------------"
 
+      # --- INÍCIO DA NOVA FUNCIONALIDADE: ASSUMIR ROLE DINÂMICA ---
+      # Este bloco é inserido aqui para assumir a role antes de inicializar o Terraform.
+      - |
+        echo "=================================================="
+        echo "ASSUMINDO A ROLE DINÂMICA..."
+        
+        if [ -z "${DYNAMIC_ASSUMABLE_ROLE_ARN}" ]; then
+          echo "ERRO: A variável DYNAMIC_ASSUMABLE_ROLE_ARN não foi definida. Abortando."
+          exit 1
+        fi
+        
+        echo "Role a ser assumida: ${DYNAMIC_ASSUMABLE_ROLE_ARN}"
+        
+        # Usa o AWS CLI para assumir a role e armazena as credenciais temporárias em um JSON.
+        TEMP_ROLE_JSON=$(aws sts assume-role --role-arn "${DYNAMIC_ASSUMABLE_ROLE_ARN}" --role-session-name "CodeBuild-Terraform-Session")
+        
+        # Verifica se o comando falhou.
+        if [ $? -ne 0 ]; then
+          echo "ERRO: Falha ao assumir a role. Verifique as permissões sts:AssumeRole na role principal do CodeBuild."
+          exit 1
+        fi
+
+        # Exporta as credenciais para o ambiente. O Terraform as usará automaticamente.
+        export AWS_ACCESS_KEY_ID=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.AccessKeyId)
+        export AWS_SECRET_ACCESS_KEY=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.SecretAccessKey)
+        export AWS_SESSION_TOKEN=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.SessionToken)
+        
+        echo "Credenciais temporárias exportadas com sucesso."
+        echo "--------------------------------------------------"
+        echo "VERIFICANDO IDENTIDADE ATUAL:"
+        # Este comando confirma que a nova identidade (da role dinâmica) está ativa.
+        aws sts get-caller-identity
+        echo "=================================================="
+      # --- FIM DA NOVA FUNCIONALIDADE ---
+
   build:
     commands:
-      # --- VERSÃO FINAL E 100% DINÂMICA BASEADA EM CONVENÇÃO ---
+      # Sua lógica de manipulação de diretórios permanece intacta.
       - |
         echo "Ajustando a estrutura de diretórios dinamicamente..."
         
-        # Define o prefixo comum que será removido dos identificadores.
-        # Altere este valor se sua convenção de nomenclatura mudar.
         PREFIX_TO_REMOVE="CloudManPro"
 
-        # Faz um loop por cada identificador na variável de ambiente.
-        # O shell irá dividir a string por espaços automaticamente.
         for IDENTIFIER in $SECONDARY_SOURCE_IDENTIFIERS; do
           
-          # Constrói o nome da variável que contém o caminho de origem
           SOURCE_PATH_VAR_NAME="CODEBUILD_SRC_DIR_${IDENTIFIER}"
-          # Usa expansão indireta para obter o caminho real
           SOURCE_PATH="${!SOURCE_PATH_VAR_NAME}"
-          
-          # Usa a expansão de parâmetro do shell para remover o prefixo do identificador,
-          # criando assim o nome do diretório de destino dinamicamente.
-          # Ex: "CloudManProLambdaDeploy" se torna "LambdaDeploy"
           TARGET_NAME="${IDENTIFIER#$PREFIX_TO_REMOVE}"
           
           echo "=================================================="
@@ -80,7 +105,9 @@ phases:
         echo "--------------------------------------------------"
         echo
 
-        echo "Inicializando o Terraform..."
+      # Os comandos do Terraform agora usarão as credenciais da role assumida.
+      - |
+        echo "Inicializando o Terraform com a identidade da role assumida..."
         terraform init -reconfigure
 
         echo "Executando o comando Terraform: ${COMMAND}"
