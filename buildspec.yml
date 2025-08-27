@@ -1,13 +1,26 @@
+# buildspec.yml para o fluxo 'Backend User' (Versão Unificada)
+#
+# OBJETIVO DESTA VERSÃO:
+# 1. Manter a lógica essencial do fluxo 'User':
+#    - Download do arquivo `main.tf` a partir do bucket S3 do usuário.
+#    - Assumir a 'DYNAMIC_ASSUMABLE_ROLE_ARN' para que o Terraform execute com as permissões do usuário.
+# 2. Incorporar a lógica de segurança do fluxo 'CloudMan':
+#    - Remover a dependência do recurso 'secondarySources' do CodeBuild.
+#    - Adicionar um script de download manual que utiliza a variável 'SOURCE_STRUCTURE' e os
+#      tokens de acesso 'GITHUB_TOKEN_*' de curta duração para baixar os repositórios do GitHub.
+
 version: 0.2
 
 env:
   variables:
     TERRAFORM_VERSION: "1.5.5"
+    # As variáveis SOURCE_STRUCTURE, GITHUB_TOKEN_*, DYNAMIC_ASSUMABLE_ROLE_ARN, etc.,
+    # são injetadas dinamicamente pela função Lambda ExecTerraform.
 
 phases:
   install:
     commands:
-      # Nenhuma alteração necessária aqui. Sua fase de instalação está perfeita.
+      # Nenhuma alteração necessária aqui. Instalação padrão do Terraform.
       - |
         echo "Instalando o Terraform ${TERRAFORM_VERSION}..."
         ARCH=$(uname -m | sed -e 's/aarch64/arm64/' -e 's/x86_64/amd64/')
@@ -21,113 +34,128 @@ phases:
 
   pre_build:
     commands:
-      # Seu bloco de download do S3 permanece como está.
+      # PASSO 1: Baixar o arquivo raiz 'main.tf' do bucket S3 do usuário.
       - |
-        echo "Construindo o caminho do S3 para o arquivo main.tf..."
+        echo "Baixando o arquivo main.tf do S3 do usuário..."
+        # NOTA: O bucket e as variáveis STATE_NAME são do ambiente do usuário,
+        # mas são passadas como variáveis de ambiente para este build.
         TF_CODE_PATH="s3://${AWS_S3_BUCKET_TARGET_NAME_0}/states/${STATE_NAME}/main.tf"
         
-        echo "Baixando o arquivo main.tf de: ${TF_CODE_PATH}"
+        echo "Baixando de: ${TF_CODE_PATH}"
         aws s3 cp "${TF_CODE_PATH}" .
-        
         echo "Arquivo main.tf baixado com sucesso."
-        echo "--------------------------------------------------"
-        echo "ESTRUTURA DE ARQUIVOS ANTES DO AJUSTE (VISUALIZAÇÃO):"
-        ls -laR
-        echo "--------------------------------------------------"
+        ls -la
 
-      # --- INÍCIO DA NOVA FUNCIONALIDADE: ASSUMIR ROLE DINÂMICA ---
-      # Este bloco é inserido aqui para assumir a role antes de inicializar o Terraform.
+      # PASSO 2: Assumir a role de execução do Terraform na conta do usuário.
+      # Esta etapa permanece, pois é fundamental para o fluxo 'User'.
       - |
         echo "=================================================="
-        echo "ASSUMINDO A ROLE DINÂMICA..."
+        echo "ASSUMINDO A ROLE DINÂMICA PARA EXECUÇÃO DO TERRAFORM..."
         
         if [ -z "${DYNAMIC_ASSUMABLE_ROLE_ARN}" ]; then
-          echo "ERRO: A variável DYNAMIC_ASSUMABLE_ROLE_ARN não foi definida. Abortando."
-          exit 1
-        fi
-        
-        echo "Role a ser assumida: ${DYNAMIC_ASSUMABLE_ROLE_ARN}"
-        
-        # Usa o AWS CLI para assumir a role e armazena as credenciais temporárias em um JSON.
-        TEMP_ROLE_JSON=$(aws sts assume-role --role-arn "${DYNAMIC_ASSUMABLE_ROLE_ARN}" --role-session-name "CodeBuild-Terraform-Session")
-        
-        # Verifica se o comando falhou.
-        if [ $? -ne 0 ]; then
-          echo "ERRO: Falha ao assumir a role. Verifique as permissões sts:AssumeRole na role principal do CodeBuild."
-          exit 1
-        fi
+          echo "AVISO: A variável DYNAMIC_ASSUMABLE_ROLE_ARN não foi definida. Terraform usará as credenciais da role principal."
+        else
+          echo "Role a ser assumida: ${DYNAMIC_ASSUMABLE_ROLE_ARN}"
+          TEMP_ROLE_JSON=$(aws sts assume-role --role-arn "${DYNAMIC_ASSUMABLE_ROLE_ARN}" --role-session-name "CodeBuild-Terraform-Session")
+          
+          if [ $? -ne 0 ]; then
+            echo "ERRO: Falha ao assumir a role. Verifique as permissões sts:AssumeRole."
+            exit 1
+          fi
 
-        # Exporta as credenciais para o ambiente. O Terraform as usará automaticamente.
-        export AWS_ACCESS_KEY_ID=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.AccessKeyId)
-        export AWS_SECRET_ACCESS_KEY=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.SecretAccessKey)
-        export AWS_SESSION_TOKEN=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.SessionToken)
-        
-        echo "Credenciais temporárias exportadas com sucesso."
-        echo "--------------------------------------------------"
-        echo "VERIFICANDO IDENTIDADE ATUAL:"
-        # Este comando confirma que a nova identidade (da role dinâmica) está ativa.
-        aws sts get-caller-identity
+          export AWS_ACCESS_KEY_ID=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.AccessKeyId)
+          export AWS_SECRET_ACCESS_KEY=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.SecretAccessKey)
+          export AWS_SESSION_TOKEN=$(echo $TEMP_ROLE_JSON | jq -r .Credentials.SessionToken)
+          
+          echo "Credenciais temporárias exportadas. Verificando nova identidade:"
+          aws sts get-caller-identity
+        fi
         echo "=================================================="
-      # --- FIM DA NOVA FUNCIONALIDADE ---
 
   build:
     commands:
-      # Sua lógica de manipulação de diretórios permanece intacta.
+      # PASSO 3: Lógica de download manual de fontes do GitHub.
+      # Este bloco substitui completamente a antiga lógica de 'secondarySources'.
       - |
-        echo "Ajustando a estrutura de diretórios dinamicamente..."
-        
-        PREFIX_TO_REMOVE="CloudManPro"
+        set -e # Garante que o script pare se um comando falhar
+        download_recursive() {
+          local repo_full_name=$1; local path=$2; local token=$3
+          local api_url="https://api.github.com/repos/${repo_full_name}/contents/${path}"
+          echo "    -> Baixando conteúdo recursivamente de: ${repo_full_name}/${path}"
+          curl -sS -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.v3+json" "${api_url}" | \
+          jq -c '.[]' | while read -r item; do
+            item_type=$(echo "$item" | jq -r '.type'); item_path=$(echo "$item" | jq -r '.path'); item_download_url=$(echo "$item" | jq -r '.download_url')
+            if [ "$item_type" = "dir" ]; then
+              download_recursive "$repo_full_name" "$item_path" "$token"
+            elif [ "$item_type" = "file" ]; then
+              echo "      -> Baixando arquivo: ${item_path}"
+              mkdir -p "$(dirname "${item_path}")"
+              curl -sS -L -o "${item_path}" -H "Authorization: Bearer ${token}" -H "Accept: application/octet-stream" "${item_download_url}"
+            fi
+          done
+        }
+        if [ -n "${SOURCE_STRUCTURE}" ]; then
+          echo "--- Iniciando o download de fontes externas do GitHub ---"
+          echo "${SOURCE_STRUCTURE}" | jq -c '.[]' | while read -r repo_info; do
+            repo_full_name=$(echo "$repo_info" | jq -r '.repo')
+            repo_owner=$(echo "$repo_full_name" | cut -d'/' -f1)
+            repo_name=$(echo "$repo_full_name" | cut -d'/' -f2)
 
-        for IDENTIFIER in $SECONDARY_SOURCE_IDENTIFIERS; do
-          
-          SOURCE_PATH_VAR_NAME="CODEBUILD_SRC_DIR_${IDENTIFIER}"
-          SOURCE_PATH="${!SOURCE_PATH_VAR_NAME}"
-          TARGET_NAME="${IDENTIFIER#$PREFIX_TO_REMOVE}"
-          
-          echo "=================================================="
-          echo "Processando Identificador: ${IDENTIFIER}"
-          echo "  -> Caminho de Origem: ${SOURCE_PATH}"
-          echo "  -> Nome de Destino Calculado: ${TARGET_NAME}"
-          
-          if [ -d "${SOURCE_PATH}" ]; then
-            echo "  -> Movendo '${SOURCE_PATH}' para '${TARGET_NAME}'..."
-            mv "${SOURCE_PATH}" "${TARGET_NAME}"
-          else
-            echo "  -> AVISO: Diretório de origem '${SOURCE_PATH}' não encontrado. Pulando."
-          fi
-          echo "=================================================="
-        done
-        
+            sanitized_owner_for_var=$(echo "$repo_owner" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_]//g')
+            token_var_name="GITHUB_TOKEN_${sanitized_owner_for_var}"
+            token_value="${!token_var_name}"
+
+            if [ -z "$token_value" ]; then
+                echo "ERRO: Token não encontrado para o owner '${repo_owner}' (Variável esperada: ${token_var_name}). Abortando."
+                exit 1
+            fi
+
+            echo "Processando repositório: ${repo_full_name}"
+            items_count=$(echo "$repo_info" | jq '.items | length')
+
+            if [ "${items_count}" -gt 0 ]; then
+              echo "  -> Encontrados ${items_count} itens para download seletivo."
+              echo "$repo_info" | jq -c '.items[]' | while read -r item_to_download; do
+                item_type=$(echo "$item_to_download" | jq -r '.type'); item_path=$(echo "$item_to_download" | jq -r '.path')
+                if [ "$item_type" = "dir" ]; then
+                  download_recursive "$repo_full_name" "$item_path" "$token_value"
+                elif [ "$item_type" = "file" ]; then
+                  api_url="https://api.github.com/repos/${repo_full_name}/contents/${item_path}"
+                  echo "    -> Baixando arquivo específico: ${item_path}"
+                  download_url=$(curl -sS -H "Authorization: Bearer ${token_value}" -H "Accept: application/vnd.github.v3+json" "${api_url}" | jq -r '.download_url')
+                  mkdir -p "$(dirname "${item_path}")"
+                  curl -sS -L -o "${item_path}" -H "Authorization: Bearer ${token_value}" -H "Accept: application/octet-stream" "${download_url}"
+                fi
+              done
+            else
+              echo "  -> A lista 'items' está vazia. Clonando o repositório completo."
+              git clone --depth 1 "https://oauth2:${token_value}@github.com/${repo_full_name}.git" "${repo_name}"
+            fi
+          done
+          echo "--- Download de fontes externas concluído ---"
+        else
+          echo "Nenhuma estrutura para download de fontes do GitHub foi fornecida. Pulando esta etapa."
+        fi
+
+      # PASSO 4: Executar os comandos do Terraform.
+      # Esta lógica permanece a mesma.
+      - |
         echo
         echo "--------------------------------------------------"
-        echo "ESTRUTURA DE ARQUIVOS DEPOIS DO AJUSTE (VISUALIZAÇÃO):"
+        echo "ESTRUTURA DE ARQUIVOS FINAL (APÓS TODOS OS DOWNLOADS):"
         ls -laR
         echo "--------------------------------------------------"
         echo
-
-      # Os comandos do Terraform agora usarão as credenciais da role assumida.
-      - |
-        echo "Inicializando o Terraform com a identidade da role assumida..."
-        terraform init -reconfigure
-
+        echo "Inicializando o Terraform..."
+        terraform init -no-color -reconfigure
         echo "Executando o comando Terraform: ${COMMAND}"
         case ${COMMAND} in
-          plan)
-            terraform plan
-            ;;
-          apply)
-            terraform plan -out=tfplan
-            terraform apply -auto-approve tfplan
-            ;;
-          destroy)
-            terraform destroy -auto-approve
-            ;;
-          *)
-            echo "Comando '${COMMAND}' inválido. Use 'plan', 'apply' ou 'destroy'."
-            exit 1
-            ;;
+          plan) terraform plan -no-color ;;
+          apply) terraform plan -no-color -out=tfplan && terraform apply -no-color -auto-approve tfplan ;;
+          destroy) terraform destroy -no-color -auto-approve ;;
+          *) echo "Comando '${COMMAND}' inválido."; exit 1 ;;
         esac
 
   post_build:
     commands:
-      - echo "Build para o comando '${COMMAND}' concluído."
+      - echo "Build para o comando '${COMMAND}' concluído com sucesso."
